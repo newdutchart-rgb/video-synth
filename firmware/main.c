@@ -7,6 +7,11 @@
  * PC0..PC2 : potmeters (ADC0..ADC2) voor patroonmodulatie
  *
  * Quasi-PAL: 64 us per regel, 312 regels per veld, 50 Hz, non-interlaced.
+ *
+ * Patronen (RV2 / PC1 selecteert):
+ *   0-3 : sinusgolven, scrollend (RV1 snelheid, RV3 fase)
+ *   4-7 : klassiek testbeeld (schaakbord, grijstrap, raster, cirkel,
+ *         zwart/wit-balken, diagonale ramp)
  */
 
 #define F_CPU 16000000UL
@@ -25,8 +30,8 @@
 #define ACTIVE_START       40      /* regels na vsync voor zichtbare regels */
 #define ACTIVE_LINES      240
 
-#define PIXELS              44
-#define CYCLES_PER_PIXEL    17
+#define PIXELS              24
+#define CYCLES_PER_PIXEL    32
 
 /* sinustabel, 32 stappen, amplitude 16 (4-bit) */
 static const uint8_t sin_lut[32] = {
@@ -36,12 +41,22 @@ static const uint8_t sin_lut[32] = {
     0, 0, 1, 1, 2, 3, 5, 6
 };
 
+/* testbeeld-cirkel: halve breedte dx bij dy (0..28), ellips a=10, b=28 */
+static const uint8_t circle_lut[29] = {
+   10,10,10,10,10,10,10,10,10, 9,
+    9, 9, 9, 9, 8, 8, 8, 7, 7, 7,
+    6, 6, 5, 5, 4, 3, 3, 2, 0
+};
+
+#define CIRCLE_CY   128     /* midden van de cirkel (band 3+4: regels 96..159) */
+#define CIRCLE_XC   12      /* pixelmidden bij PIXELS=24 */
+
 static volatile uint16_t line = 0;
 static volatile uint16_t frame = 0;
 
 /* patroonparameters, gevuld door de main loop (ADC) */
 static volatile uint8_t mod_rate   = 8;   /* scrollsnelheid (RV1) */
-static volatile uint8_t mod_wave   = 0;   /* golfvormmix (RV2) */
+static volatile uint8_t mod_wave   = 0;   /* golfvorm/patroonkeuze (RV2) */
 static volatile uint8_t mod_phase  = 0;   /* fase/invert (RV3) */
 
 static inline void sync_low(void)
@@ -55,16 +70,44 @@ static inline void sync_release(void)
     SYNC_DDR &= ~(uint8_t)SYNC_BIT;   /* Hi-Z */
 }
 
-/* verticale sync: brede pulsen (2 x 30 us laag per regel) */
+/* verticale sync: 2 brede pulsen per regel (15 us laag, 17 us hoog) */
 static void emit_vsync_line(void)
 {
     sync_low();
-    __builtin_avr_delay_cycles(30 * 16 - 40);
+    __builtin_avr_delay_cycles(15 * 16 - 10);
     sync_release();
-    __builtin_avr_delay_cycles(34 * 16);
+    __builtin_avr_delay_cycles(17 * 16);
     sync_low();
-    __builtin_avr_delay_cycles(30 * 16 - 40);
+    __builtin_avr_delay_cycles(15 * 16 - 10);
     sync_release();
+}
+
+/* testbeeld: klassiek patroon in 8 horizontale banden van 30 regels */
+static uint8_t testbeeld_px(uint8_t x, uint8_t y, uint8_t dxl)
+{
+    switch (y >> 5) {
+    case 0:                                     /* schaakbord 2x2 px */
+        return (((x >> 1) ^ (y >> 1)) & 1) ? 0x0F : 0x00;
+    case 1:                                     /* grijstrap, 6 treden */
+        return (x >> 2) * 3;
+    case 2:                                     /* raster op middengrijs */
+        return ((x & 3) == 0 || (y & 15) == 0) ? 0x0F : 0x08;
+    case 3:                                     /* cirkel, bovenhelft */
+    case 4: {                                   /* cirkel, onderhelft */
+        uint8_t ax = (x < CIRCLE_XC) ? CIRCLE_XC - x : x - CIRCLE_XC;
+        if (ax + 1 >= dxl && ax <= dxl + 1)
+            return 0x0F;
+        if (y == CIRCLE_CY && x > CIRCLE_XC - 4 && x < CIRCLE_XC + 4)
+            return 0x0F;                        /* horizon lijn */
+        return 0x08;
+    }
+    case 5:                                     /* zwart/wit-balken */
+        return (x < PIXELS / 2) ? 0x0F : 0x00;
+    case 6:                                     /* verticale grijstrap */
+        return (y - 192) >> 1;
+    default:                                    /* diagonale ramp */
+        return ((x >> 1) + (y >> 1)) & 0x0F;
+    }
 }
 
 /* horizontale regel: 4.7 us sync + actieve pixels */
@@ -75,23 +118,28 @@ static void emit_line(uint16_t ln)
     sync_release();
     __builtin_avr_delay_cycles(6 * 16);          /* back porch */
 
-    uint8_t phase  = (uint8_t)(ln * mod_rate >> 3) + mod_phase;
-    uint8_t wave   = mod_wave;
-    uint8_t x = 0;
+    uint8_t phase = (uint8_t)(ln * mod_rate >> 3) + mod_phase;
+    uint8_t wave  = mod_wave;
+    uint8_t y     = (uint8_t)(ln - ACTIVE_START);
+    uint8_t x     = 0;
 
-    if (ln >= ACTIVE_START && ln < ACTIVE_START + ACTIVE_LINES) {
-        for (x = 0; x < PIXELS; x++) {
-            uint8_t v = sin_lut[(x + phase) & 31];
+    /* per regel voorberekende cirkelbreedte (band 3/4) */
+    uint8_t dy    = (y > CIRCLE_CY) ? y - CIRCLE_CY : CIRCLE_CY - y;
+    uint8_t dxl   = (dy < 29) ? circle_lut[dy] : 0xFF;  /* buiten cirkel: geen outline */
+
+    for (x = 0; x < PIXELS; x++) {
+        uint8_t v;
+        if (wave & 0x04)
+            v = testbeeld_px(x, y, dxl);
+        else {
+            v = sin_lut[(x + phase) & 31];
             if (wave & 0x01) v ^= 0x0F;
             if (wave & 0x02) v = (x ^ ln) & 0x0F;
-            if (wave & 0x04) v = ((x & 8) ^ (ln & 8)) ? 0x0F : 0x00;
-            VIDEO_PORT = (VIDEO_PORT & ~VIDEO_MASK) | ((v & 0x0F) << 2);
-            __builtin_avr_delay_cycles(CYCLES_PER_PIXEL);
         }
-        VIDEO_PORT &= ~VIDEO_MASK;
-    } else {
-        VIDEO_PORT &= ~VIDEO_MASK;          /* blanking: black-niveau */
+        VIDEO_PORT = (VIDEO_PORT & ~VIDEO_MASK) | ((v & 0x0F) << 2);
+        __builtin_avr_delay_cycles(CYCLES_PER_PIXEL);
     }
+    VIDEO_PORT &= ~VIDEO_MASK;
 }
 
 ISR(TIMER1_COMPA_vect)
@@ -110,7 +158,7 @@ ISR(TIMER1_COMPA_vect)
 
 static void adc_init(void)
 {
-    ADMUX  = (1 << REFS0);                 /* AVcc, kanal 0 */
+    ADMUX  = (1 << REFS0);                 /* AVcc, kanaal 0 */
     ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1);  /* prescaler /64 */
 }
 

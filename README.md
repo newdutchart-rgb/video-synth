@@ -54,6 +54,11 @@ make flash      # avrdude via USBasp; pas AVRDUDE_PROG in Makefile aan
 Patronen worden gemoduleerd door de drie potmeters: frequentie/scrollsnelheid,
 golfvorm/patroonkeuze en fase/invertie (zie docs/bouwen.md).
 
+**Ingebouwd klassiek testbeeld** (RV2 volledig open): schaakbord, grijstrap,
+raster, cirkel met horizonlijn, zwart/wit-balken, verticale grijstrap en
+diagonale ramp — een knipoog naar het oude omroep-testbeeld, nu in 24×240
+pixels en 16 grijstinten.
+
 ## Printplaatroostering
 
 De `.kicad_pcb` bevat de outline en de volledige componentplaatsing

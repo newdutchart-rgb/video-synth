@@ -34,9 +34,16 @@ Nadat de bootloader niet nodig is: flash via ISP-header J6.
 ## 4. Gebruik
 
 - **RV1** (PC0): patroonfrequentie / scrollsnelheid
-- **RV2** (PC1): golfvorm / patroonkeuze-mix
-- **RV3** (PC2): fase / invertie-mix
+- **RV2** (PC1): patroonkeuze — laag: sinusgolven/invert/xor, hoog (≥ 4): klassiek testbeeld
+- **RV3** (PC2): fase / invertie
 - Externe CV (0–5 V, audio of LFO) op J3–J5 moduleert de helderheid mee.
+
+### Testbeeld
+
+Met RV2 in de bovenste stand toont de synth het klassieke testbeeld:
+schaakbord (2×2 px), grijstrap (6 treden), raster op middengrijs, cirkel met
+horizonlijn, zwart/wit-balken, verticale grijstrap en diagonale ramp —
+24×240 pixels, 16 grijstinten.
 
 ## 5. Kalibratie / problemen
 
